@@ -13,16 +13,30 @@ from fastapi import Request
 app = FastAPI()
 
 # Static files (for storing generated charts and prediction results)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+# templates = Jinja2Templates(directory="templates")
 
-# Create directories if they do not exist
-os.makedirs('temp', exist_ok=True)
+# # Create directories if they do not exist
+# os.makedirs('temp', exist_ok=True)
 
-# Load the trained model and label encoders
-model_rf = joblib.load("models/random_forest_model (1).pkl")
-label_encoder_qualification = joblib.load("models/label_encoder_qualification.pkl")
-label_encoder_area = joblib.load("models/label_encoder_area.pkl")
+import os
+
+# Get current file directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Update paths
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+# Load models and label encoders
+model_rf = joblib.load(os.path.join(MODEL_DIR, "random_forest_model.pkl"))
+label_encoder_qualification = joblib.load(os.path.join(MODEL_DIR, "label_encoder_qualification.pkl"))
+label_encoder_area = joblib.load(os.path.join(MODEL_DIR, "label_encoder_area.pkl"))
+
+# Mount static files and templates
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # Safe Label Encoding
 def safe_label_encode(label_encoder, data_column):
@@ -70,44 +84,35 @@ def plot_scaled_probability_distribution(data):
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-
 @app.post("/predict", response_class=HTMLResponse)
 async def predict(request: Request, file: UploadFile = File(...)):
-
-    # Save uploaded file to a temporary location
-    file_location = f"temp/{file.filename}"
-    with open(file_location, "wb+") as f:
-        f.write(file.file.read())
-
     try:
-        # Read and preprocess the data
-        data = pd.read_csv(file_location)
-        processed_data = preprocess_uploaded_data_for_prediction(data)
+        # Read uploaded file content
+        file_content = file.file.read()
+        data = pd.read_csv(pd.compat.StringIO(file_content.decode("utf-8")))
         
-        # Make predictions using the trained model
+        # Preprocess data and make predictions
+        processed_data = preprocess_uploaded_data_for_prediction(data)
         probabilities = model_rf.predict_proba(processed_data)
         predictions = model_rf.predict(processed_data)
-        
-        # Scale dropout probabilities to a 1-10 scale
+
+        # Scale probabilities and save results
         dropout_probabilities = probabilities[:, 1]
         scaled_probabilities = scale_probabilities_to_10(dropout_probabilities)
-        
-        # Add predictions and scaled probabilities to the dataframe
         data['Dropout_Prediction'] = predictions
         data['Scaled_Dropout_Probability'] = scaled_probabilities
+        
+        # Save results to a CSV in memory
+        result_csv = data.to_csv(index=False)
 
-        # Save the results to a CSV file
-        result_filename = f"static/dropout_predictions_scaled.csv"
-        data.to_csv(result_filename, index=False)
-
-        # Plot the scaled dropout probabilities
+        # Generate plot in memory
         plot_scaled_probability_distribution(data)
 
-        # Return the results with a flag indicating prediction is done
+        # Return results
         return templates.TemplateResponse("results.html", {
             "request": request,
             "prediction_done": True,
-            "result_file": result_filename,
+            "result_file": result_csv,
             "chart_file": "/static/prediction_chart.png"
         })
 
